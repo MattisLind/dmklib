@@ -22,8 +22,8 @@
  */
 
 
-#define DEBUG_CRC 0
-#undef DEBUG_GAP
+#define DEBUG_CRC 3
+#define DEBUG_GAP
 
 
 #include <stdint.h>
@@ -133,7 +133,30 @@ track_format_t track_format [MAX_SECTOR_MODE] =
   }
 };
 
-
+void dump_buf(uint8_t * buf, int len)
+{
+  fprintf(stderr, "Buffer:\n");
+  while (len) {
+	fprintf(stderr, "%02X", *buf++);
+	len--;
+  }
+  fprintf(stderr, "\n");
+}
+void dump_buf_ascii(uint8_t * buf, int len)
+{
+  fprintf(stderr, "Buffer:\n");
+  while (len) {
+    if (*buf>0x20 && *buf<0x7f) {
+		fprintf(stderr, "%c", *buf++);
+	}
+	else {
+		fprintf(stderr, ".");
+		buf++;
+	}	
+	len--;
+  }
+  fprintf(stderr, "\n");
+}
 typedef struct
 {
   int resident;  /* boolean */
@@ -156,7 +179,7 @@ struct dmk_state
   int dd;    /* disk is double density */
   int rpm;   /* 300 or 360 RPM */
   int rate;  /* 125, 250, 300, or 500 Kbps */
-
+  int rx02;
   /* computed parameters */
   int track_length;  /* length of a track buffer, not including IDAM
 			pointers -- raw data only */
@@ -220,7 +243,8 @@ static inline void advance_p (dmk_handle h, int count)
 
 static void read_buf (dmk_handle h,
 		      int len,
-		      uint8_t *data)
+		      uint8_t *data,
+			  int rx02Override)
 {
   uint8_t b;
 
@@ -229,7 +253,7 @@ static void read_buf (dmk_handle h,
     {
       b = h->cur_track->buf [h->p];
       inc_p (h);
-      if (h->dd && (h->cur_mode == DMK_FM))
+      if (h->dd && (h->cur_mode == DMK_FM) && !rx02Override)
 	inc_p (h);
       compute_crc (h, b);
       *(data++) = b;
@@ -241,18 +265,18 @@ static uint8_t read_buf_byte (dmk_handle h)
 {
   uint8_t b;
 
-  read_buf (h, 1, & b);
+  read_buf (h, 1, & b, 0);
   return (b);
 }
 
 
-static int check_crc (dmk_handle h)
+static int check_crc (dmk_handle h, int rx02Override)
 {
   uint8_t d [2];
   uint16_t actual_crc;
   uint16_t expected_crc = h->crc;
 
-  read_buf (h, 2, d);
+  read_buf (h, 2, d, rx02Override);
   actual_crc = (d [0] << 8) | d [1];
   if (actual_crc == expected_crc)
     return (1);
@@ -359,7 +383,7 @@ dmk_handle dmk_open_image (char *fn,
   h->track_length = ((dmk_header [3] << 8) | dmk_header [2]) - 2 * DMK_MAX_SECTOR;
   h->dd = ! (dmk_header [4] & DMK_FLAG_SD_MASK);
   h->ds = ! (dmk_header [4] & DMK_FLAG_SS_MASK);
-
+  h->rx02 = (dmk_header [4] & DMK_FLAG_RX02_MASK) >> 5;
   *ds = h->ds;
   *cylinders = h->cylinders;
   *dd = h->dd;
@@ -395,7 +419,8 @@ dmk_handle dmk_create_image (char *fn,
 			     int cylinders,
 			     int dd,    /* boolean */
 			     int rpm,   /* 300 or 360 RPM */
-			     int rate)  /* 125, 250, 300, or 500 Kbps */
+			     int rate,  /* 125, 250, 300, or 500 Kbps */
+				 int rx02)  /* RX02 image */
 {
   dmk_handle h;
 
@@ -415,13 +440,20 @@ dmk_handle dmk_create_image (char *fn,
   h->dd = dd;
   h->rpm = rpm;
   h->rate = rate;
-
-  if ((rpm == 360) && (rate == 500) && dd)
+  h->rx02 = rx02;
+  if (rx02) {
+	h->dd=1;
+  }
+  if (rx02) {
+	h->track_length = 0x29c0;
+  }
+  else if ((rpm == 360) && (rate == 500) && dd)
     h->track_length = 0x2900;  /* 8-inch DD, defined in DMK spec
 				  (doesn't include IDAM pointers */
   else if ((rpm == 360) && (rate == 250) && ! dd)
     h->track_length = 0x14a0;  /* 8-inch SD, defined in DMK spec
 				  (doesn't include IDAM pointers */
+
   else
     {
       h->track_length = (rate * 7500L) / rpm;
@@ -481,7 +513,8 @@ int dmk_close_image (dmk_handle h)
 	dmk_header [4] |= DMK_FLAG_SS_MASK;
       if (! h->dd)
 	dmk_header [4] |= DMK_FLAG_SD_MASK;
-    
+      if (h->rx02) 
+		dmk_header [4] |= DMK_FLAG_RX02_MASK; 
       /* note that we should still be positioned to the start of the file */
       if (1 != fwrite (dmk_header, sizeof (dmk_header), 1, h->f))
 	{
@@ -668,7 +701,7 @@ static int read_data_field (dmk_handle h,
   for (i = 0; i < MAX_ID_GAP; i++)
     {
       b = read_buf_byte (h);
-      if ((b >= 0xf8) && (b <= 0xfb))
+      if ((b >= 0xf8) && (b <= 0xfd))
 	break;
     }
   if (i >= MAX_ID_GAP)
@@ -683,8 +716,11 @@ static int read_data_field (dmk_handle h,
       compute_crc (h, 0xa1);
     }
   compute_crc (h, b);  /* the data mark is included in the CRC */
-  read_buf (h, 128 << sector_info->size_code, data);
-  return (check_crc (h));
+  //fprintf(stderr, "read_data_field size_code=%d\n", sector_info->size_code);
+  read_buf (h, 128 << sector_info->size_code, data, h->rx02);
+  //dump_buf(data, 128 << sector_info->size_code);
+  //dump_buf_ascii(data, 128 << sector_info->size_code);
+  return (check_crc (h, h->rx02));
 }
 
 
@@ -825,12 +861,12 @@ int dmk_format_track (dmk_handle h,
   memset (h->cur_track->idam_pointer, 0, sizeof (h->cur_track->idam_pointer));
 
   h->p = 0;
-
+/*
   write_buf_count_data (h, & fmt->pre_index_gap [0]);
   write_buf_count_data (h, & fmt->pre_index_gap [1]);
   write_buf_count_data_clock (h, & fmt->index_mark [0]);
   write_buf_count_data_clock (h, & fmt->index_mark [1]);
-
+*/
   for (sector = 0; sector < sector_count; sector++)
     {
       write_buf_count_data (h, & pre_sector_gap [0]);
@@ -867,7 +903,7 @@ int dmk_format_track (dmk_handle h,
 #if (DEBUG_CRC >= 2)
       fprintf (stderr, "after sector %02x: %04x\n", sector_info [sector].sector, h->crc);
 #endif /* DEBUG_CRC */
-      write_buf_const (h, 1, sector_info [sector].size_code);
+      write_buf_const (h, 1, sector_info [sector].size_code-h->rx02);
 #if (DEBUG_CRC >= 2)
       fprintf (stderr, "after size code %02x: %04x\n", sector_info [sector].size_code, h->crc);
 #endif /* DEBUG_CRC */
@@ -905,13 +941,13 @@ int dmk_format_track (dmk_handle h,
 			  fmt->post_data_gap [1].count),
 			 fmt->id_gap [0].data);
     }
-
+  //fprintf(stderr, "format end\n");
   /* fill rest of track (gap 4) */
   gap4_len = h->track_length - h->p;
   if (h->dd && (h->cur_mode == DMK_FM))
     gap4_len /= 2;
   write_buf_const (h, gap4_len, fmt->gap_4_data);
-
+  //fprintf(stderr, "format end2\n");
   return (1);
 }
 
@@ -968,17 +1004,18 @@ static int find_address_mark (dmk_handle h,
       sector_info.cylinder  = read_buf_byte (h);
       sector_info.head      = read_buf_byte (h);
       sector_info.sector    = read_buf_byte (h);
-      sector_info.size_code = read_buf_byte (h);
-      if (! check_crc (h))
+      sector_info.size_code = read_buf_byte (h)+ h->rx02;
+      //fprintf (stderr, "find_address_mark: size_code = %d\n", sector_info.size_code);
+      if (! check_crc (h,0))
 	{
 	  fprintf (stderr, "find_address_mark: address mark CRC bad\n");
 	  continue;
 	}
-
+      //fprintf (stderr, "req_size_code=%d\n",req_sector->size_code); 
       if ((req_sector->cylinder  != sector_info.cylinder) ||
 	  (req_sector->head      != sector_info.head) ||
 	  (req_sector->sector    != sector_info.sector) ||
-	  (req_sector->size_code != sector_info.size_code))
+	  ((req_sector->size_code) != sector_info.size_code))
 	continue;
 
       return (1);
@@ -1011,7 +1048,7 @@ int dmk_read_id (dmk_handle h,
 
   if (h->p == 0)
     return (0);
-
+  //fprintf (stderr, "cur_mode=%d\n", h->cur_mode );
   fmt = & track_format [h->cur_mode];
 
   /* is there room in the track for a complete address mark? */
@@ -1039,10 +1076,11 @@ int dmk_read_id (dmk_handle h,
   sector_info->cylinder  = read_buf_byte (h);
   sector_info->head      = read_buf_byte (h);
   sector_info->sector    = read_buf_byte (h);
-  sector_info->size_code = read_buf_byte (h);
+  //fprintf (stderr, "size_code=%d rx02=%d\n", sector_info->size_code, h->rx02);
+  sector_info->size_code = read_buf_byte (h) + h->rx02;
   sector_info->mode      = h->cur_mode;
 
-  if (! check_crc (h))
+  if (! check_crc (h,0))
     {
       fprintf (stderr, "dmk_read_id: address mark CRC bad\n");
       fprintf (stderr, "mode: %s\n", sector_info->mode == DMK_FM ? "FM" : "MFM");

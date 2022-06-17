@@ -57,7 +57,9 @@ dmk_handle dmk_create_image (char *fn,
 			     int cylinders,
 			     int dd,    /* boolean */
 			     int rpm,   /* 300 or 360 RPM */
-			     int rate); /* 125, 250, 300, or 500 Kbps */
+			     int rate,  /* 125, 250, 300, or 500 Kbps */
+				 int);  /* RX02 image */
+
 
 /*
  * Set ds true for double-sided disks.

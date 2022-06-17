@@ -25,7 +25,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-
 #include "libdmk.h"
 
 
@@ -44,7 +43,7 @@ int main (int argc, char *argv[])
   dmk_handle h;
   FILE *outf;
 
-  int ds, dd;
+  int ds, dd, rx02;
   int cylinders;
 
   int cylinder, head, sector;
@@ -53,7 +52,7 @@ int main (int argc, char *argv[])
   int min_sector, max_sector;
   sector_info_t sector_info [DMK_MAX_SECTOR];
   int sector_index [256];
-
+ 
   uint8_t buf [1024];
 
   int i;
@@ -112,8 +111,8 @@ int main (int argc, char *argv[])
 	  }
 	sector_count = i;
 
-#if 0
-	printf ("sector count %d, from %d to %d\n", sector_count, min_sector, max_sector);
+#if 1
+	//printf ("sector count %d, from %d to %d\n", sector_count, min_sector, max_sector);
 #endif
 	if (sector_count != ((max_sector - min_sector) + 1))
 	  {
@@ -133,9 +132,9 @@ int main (int argc, char *argv[])
 			sector_info [sector_index [sector]].head,
 			sector_info [sector_index [sector]].sector,
 			sector_info [sector_index [sector]].size_code);
-		hex_dump (buf, 128 << sector_info [sector_index [sector]].size_code);
+		/*hex_dump (buf, 128 << sector_info [sector_index [sector]].size_code);*/
 #endif
-		if (1 != fwrite (buf, 128 << sector_info [sector_index [sector]].size_code, 1, outf))
+		if (1 != fwrite (buf, 128 << (sector_info [sector_index [sector]].size_code), 1, outf))
 		  {
 		    fprintf (stderr, "error writing raw file\n");
 		    exit (2);
